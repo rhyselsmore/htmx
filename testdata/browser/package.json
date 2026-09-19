@@ -1,0 +1,19 @@
+{
+  "name": "htmx-package-browser-tests",
+  "private": true,
+  "scripts": {
+    "format": "prettier --write '*.cjs' '*.json' 'server/*.js'",
+    "format:check": "prettier --check '*.cjs' '*.json' 'server/*.js'",
+    "test": "playwright test",
+    "test:setup": "node --test setup.test.cjs",
+    "browsers:install": "playwright install --with-deps chromium firefox webkit",
+    "test:client": "node client-protocol.cjs && node client-history.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "prettier": "3.6.2"
+  },
+  "engines": {
+    "node": "22.x"
+  }
+}
