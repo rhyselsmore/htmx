@@ -1,8 +1,5 @@
 # Changelog
 
-User-facing changes are recorded here. Module versions are independent of htmx
-client versions.
-
 ## v1.0.0 - 2026-09-20
 
 Initial public release, extracted from an internal application without its
