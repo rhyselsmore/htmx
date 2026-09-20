@@ -173,3 +173,62 @@ func FuzzApplyAtomicity(f *testing.F) {
 		}
 	})
 }
+
+// Exercise public construction and derivation over the same options, then
+// check independently that failed drafts and applications do not leak state.
+func FuzzResponseWith(f *testing.F) {
+	f.Add(uint8(0), "saved", `{"id":9007199254740993}`, "#alerts", `{"prior":1}`)
+	f.Add(uint8(1), "bad,name", `null`, "", `{`)
+	f.Add(uint8(2), "saved", `[1,2]`, "#other", "old")
+	f.Add(uint8(3), "saved", `{`, "#other", "")
+	f.Fuzz(func(t *testing.T, mode uint8, name, payload, target, existing string) {
+		phase := []func(string, ...TriggerOpt) ResponseOpt{Trigger, TriggerAfterSwap, TriggerAfterSettle}[int(mode)%3]
+		baseOpts := []ResponseOpt{Retarget("#items"), phase("saved", Detail("base"), TriggerTarget("#base"))}
+		base := MustResponse(baseOpts...)
+		before := responseHeaders(t, base)
+		extra := []ResponseOpt{phase(name, Detail(json.RawMessage(payload)), TriggerTarget(target))}
+		if mode&4 != 0 {
+			extra = append(extra, Retarget(target))
+		}
+		derived, err := base.With(extra...)
+		fresh, freshErr := NewResponse(append(append([]ResponseOpt(nil), baseOpts...), extra...)...)
+		if (err == nil) != (freshErr == nil) {
+			t.Fatalf("derivation/fresh errors differ: %v / %v", err, freshErr)
+		}
+		if !reflect.DeepEqual(responseHeaders(t, base), before) {
+			t.Fatal("derivation changed base")
+		}
+		if err != nil {
+			if derived != nil {
+				t.Fatal("failed derivation returned response")
+			}
+			return
+		}
+		if !reflect.DeepEqual(responseHeaders(t, derived), responseHeaders(t, fresh)) {
+			t.Fatal("derivation differs from fresh construction")
+		}
+		w := newSpy()
+		w.h.Set(HeaderTrigger, existing)
+		w.h.Set("X-App", "keep")
+		original := w.h.Clone()
+		if err := derived.Apply(w); err != nil {
+			if !reflect.DeepEqual(w.h, original) {
+				t.Fatal("failed apply changed headers")
+			}
+		} else {
+			after := w.h.Clone()
+			if err := derived.Apply(w); err != nil || !reflect.DeepEqual(w.h, after) {
+				t.Fatal("apply is not idempotent", err)
+			}
+			if w.h.Get("X-App") != "keep" {
+				t.Fatal("unrelated header changed")
+			}
+		}
+		if len(w.statuses) > 0 || len(w.body) > 0 {
+			t.Fatal("apply wrote status/body")
+		}
+		if !reflect.DeepEqual(responseHeaders(t, base), before) {
+			t.Fatal("apply changed base")
+		}
+	})
+}

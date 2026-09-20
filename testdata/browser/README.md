@@ -25,6 +25,8 @@ not an authentication credential.
   the client independently of the Go encoder.
 - `package.spec.cjs` exercises responses produced by the Go package. Query
   parameters select cases in `server/response.go` and `server/location.go`.
+  The derivation case sends successive requests through one shared response base
+  and checks event details, routing, DOM updates, and the unchanged base.
 - `server/page.go` renders the target elements and per-case client configuration.
   `server/events.js` records DOM events and lifecycle snapshots for assertions.
   Polling cases use separate tokens so parallel tests do not share counters.

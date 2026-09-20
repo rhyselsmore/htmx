@@ -1,6 +1,7 @@
 package htmx
 
 import (
+	"maps"
 	"net/http"
 	"sort"
 	"strings"
@@ -38,9 +39,13 @@ const (
 
 // Response is immutable and can be applied concurrently to distinct writers.
 // Its zero value is a no-op. Apply before committing a status or body.
+// Sharing one writer or header map concurrently is unsupported.
 type Response struct{ state responseState }
 
 // ResponseOpt configures a response. Its zero value does nothing.
+// Constructors return opaque options; invalid values are reported when consumed
+// by [NewResponse], [Response.With], [Respond], or [StopPolling]. See the package
+// documentation for composition rules and [Detail] for payload snapshot timing.
 type ResponseOpt struct{ apply func(*responseState) error }
 
 type navigation struct {
@@ -141,7 +146,10 @@ func (s *responseState) merge(n responseState) error {
 	return nil
 }
 
-// NewResponse validates options and snapshots an immutable response.
+// NewResponse validates the complete set of options and returns an immutable
+// response, or nil and an error. It writes nothing. Applying a valid response
+// can still fail if existing writer headers conflict or are malformed.
+// See [Response.Apply] for application semantics.
 func NewResponse(opts ...ResponseOpt) (*Response, error) {
 	s, err := construct(opts, "NewResponse")
 	if err != nil {
@@ -151,7 +159,44 @@ func NewResponse(opts ...ResponseOpt) (*Response, error) {
 }
 
 func construct(opts []ResponseOpt, op string) (responseState, error) {
-	var s, part responseState
+	return constructFrom(responseState{}, opts, op)
+}
+
+// With returns a new response containing r's instructions followed by opts.
+// It does not change r or write headers, status, or body. Errors return nil and
+// leave r usable. The zero response is a valid base; a nil receiver is an error.
+// No options (or only no-op options) return an equivalent, distinct response.
+// Concurrent derivation and application to independent writers are supported.
+//
+// With uses the same construction rules as [NewResponse]. Equal singleton
+// settings agree; different settings conflict. Repeating an event name replaces
+// its complete payload and target in that phase. A repeated [Location] must
+// agree as a whole: With does not patch nested location fields, override
+// singletons, or clear settings with empty options.
+//
+// Captured payloads remain unchanged; custom marshalers are not rerun. New
+// option errors and combined-response conflicts are returned with operation
+// With. A successfully derived response can still fail [Response.Apply] if the
+// writer's existing headers are malformed or conflict with its instructions.
+func (r *Response) With(opts ...ResponseOpt) (*Response, error) {
+	if r == nil {
+		return nil, contextError(invalid("", "response"), "With", "", "")
+	}
+	draft := r.state
+	for i := range draft.triggers {
+		draft.triggers[i].events = maps.Clone(draft.triggers[i].events)
+	}
+	s, err := constructFrom(draft, opts, "With")
+	if err != nil {
+		return nil, err
+	}
+	return &Response{state: s}, nil
+}
+
+// The caller owns s's mutable event maps. Payload and location snapshots are
+// immutable; option functions write only to the separate per-option draft.
+func constructFrom(s responseState, opts []ResponseOpt, op string) (responseState, error) {
+	var part responseState
 	var conflict error
 	for _, o := range opts {
 		if o.apply == nil {
@@ -213,7 +258,9 @@ func MustResponse(opts ...ResponseOpt) *Response {
 	return r
 }
 
-// Respond validates and applies options before any header changes. It writes no status or body.
+// Respond constructs and applies options before any header changes.
+// It writes no status or body. Check its error before rendering HTML.
+// See [Response.Apply] for merging existing headers and failure atomicity.
 func Respond(w http.ResponseWriter, opts ...ResponseOpt) error {
 	s, err := construct(opts, "Respond")
 	if err != nil {
@@ -222,8 +269,26 @@ func Respond(w http.ResponseWriter, opts ...ResponseOpt) error {
 	return apply(w, s, false, "Respond")
 }
 
-// Apply merges r with existing managed headers. Errors leave the whole map unchanged.
-// A nil response is an error; the writer and its header map must be usable.
+// Apply merges r with existing managed headers. Errors leave the whole header
+// map unchanged and write no status or body. A nil response is an error; the
+// writer and its header map must be usable. A zero/empty response is a complete
+// no-op, even if existing headers are malformed.
+//
+// A nonempty application reads every managed header, including case aliases
+// inserted directly into the map. It rejects multiple values, malformed JSON,
+// duplicate object keys, unknown location fields, non-ASCII wire text, and legacy
+// HX-Push. Supported values are normalized and merged using the construction
+// rules. Trigger names accumulate, with later definitions replacing earlier ones
+// in the same phase. Unrelated headers are untouched.
+//
+// An existing HX-Replace-Url: false normalizes to HX-Push-Url: false, removing
+// the old representation. Both history headers together are rejected.
+//
+// Atomicity applies to this call. Earlier successful headers remain if a later
+// call fails; http.Error does not clear them. Collect related options in one
+// response, or explicitly remove application-owned headers in an error responder.
+// The package cannot detect whether an arbitrary writer already committed its
+// response, and cannot undo HTML, status, or application work already performed.
 func (r *Response) Apply(w http.ResponseWriter) error {
 	if r == nil {
 		return contextError(invalid("", "response"), "Apply", "", "")
@@ -232,7 +297,14 @@ func (r *Response) Apply(w http.ResponseWriter) error {
 }
 
 // StopPolling validates and applies options, then writes status 286 exactly once.
-// Navigation is rejected, including navigation already present on the writer.
+// It always validates existing managed headers, even with no options. Navigation
+// is rejected, including navigation already present on the writer. On error it
+// changes no headers and writes no status or body. The caller may write a body
+// after success.
+//
+// Polling stops only if the client processes the response. Configuring 286 not
+// to swap prevents the pinned client's polling cancellation branch from running.
+// See [Response.Apply] for existing-header and per-call atomicity rules.
 func StopPolling(w http.ResponseWriter, opts ...ResponseOpt) error {
 	s, err := construct(opts, "StopPolling")
 	if err != nil {
@@ -457,6 +529,8 @@ func navigationOpt(kind, path string) ResponseOpt {
 }
 
 // Redirect requests a full-page navigation. Send it on a non-3xx response.
+// The URL must meet the package's supported URL rules; empty means no option.
+// Authorization and destination policy remain with the application.
 func Redirect(url string) ResponseOpt { return navigationOpt("redirect", url) }
 
 // Refresh requests a full page reload when the client handles the response.
@@ -474,10 +548,16 @@ func historyOpt(kind, path string) ResponseOpt {
 	}}
 }
 
-// PushURL adds an entry to browser history after the swap.
+// PushURL adds a fixed URL to browser history after the current response swap.
+// It follows the package URL rules and rejects the markers "true" and "false".
+// Use [SuppressHistory] to disable history. Empty means no option.
+// For AJAX location follow-ups, use [LocationPushURL].
 func PushURL(url string) ResponseOpt { return historyOpt("push", url) }
 
 // ReplaceURL replaces the current browser history entry with a fixed URL.
+// It follows the package URL rules and rejects the markers "true" and "false".
+// Empty means no option. For location follow-ups, use [LocationReplaceURL] or
+// [LocationReplaceDestination] for the eventual destination.
 func ReplaceURL(url string) ResponseOpt { return historyOpt("replace", url) }
 
 // SuppressHistory asks the client to skip the entire response's history update.

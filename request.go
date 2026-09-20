@@ -32,9 +32,14 @@ func IsHistoryRestore(r *http.Request) bool {
 	return r.Header.Get(HeaderHistoryRestoreRequest) == "true"
 }
 
-// WantsFragment reports whether the request expects a fragment rather
-// than a full page under the usual rendering convention. Boosted requests and
-// history cache misses receive full pages; apps with custom targets may differ.
+// WantsFragment reports request=true, boosted=false, and history-restore=false.
+// Under this rendering convention, boosted requests and history cache misses
+// receive full pages. Apps with custom boosted targets may need another policy.
+//
+// For endpoints serving both variants, merge HX-Request, HX-Boosted, and
+// HX-History-Restore-Request into Vary on both page and fragment responses.
+// Preserve existing fields and Vary: *. The executable example provides an
+// application-owned helper; this package does not set cache headers.
 func WantsFragment(r *http.Request) bool {
 	return IsRequest(r) && !IsBoosted(r) && !IsHistoryRestore(r)
 }

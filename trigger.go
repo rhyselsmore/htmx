@@ -35,9 +35,23 @@ const (
 
 var triggerHeaders = [3]string{HeaderTrigger, HeaderTriggerAfterSwap, HeaderTriggerAfterSettle}
 
-// Detail snapshots value as JSON now; encoding errors are returned when the option
-// is consumed. Use Detail[any](nil) for explicit null. Only one Detail is allowed.
-// An object's top-level target belongs in TriggerTarget instead.
+// Detail snapshots value as JSON when the option is created. Named structs,
+// maps, slices, pointers and raw JSON all use the captured encoding: later input
+// changes do not change the response. Encoding errors are reported when consumed.
+// Custom marshalers run once per option creation; their programming panics are
+// not recovered. Do not mutate input concurrently while creating the option.
+//
+// Use Detail[any](nil) for explicit JSON null; Detail(nil) cannot infer its type.
+// Only one Detail is allowed per event. Object payload fields appear directly
+// on event.detail; scalar, array and null payloads use event.detail.value.
+//
+// An object's top-level target must use [TriggerTarget]. This is a package API
+// rule, although htmx supports target in JSON. The client owns elt, and error has
+// htmx error-event semantics; put domain fields with those names in a value object.
+//
+// JSON headers escape Unicode and DEL for XHR transport. Large numeric tokens
+// survive server-side accumulation, but JavaScript has its usual precision limits.
+// Use strings for identifiers beyond its safe integer range.
 func Detail[T any](value T) TriggerOpt {
 	raw, err := json.Marshal(value)
 	if err == nil && !utf8.Valid(raw) {
@@ -68,6 +82,10 @@ func Detail[T any](value T) TriggerOpt {
 }
 
 // TriggerTarget routes an event to a CSS selector. Empty means no target option.
+// Selectors may contain Unicode; they are checked for transport, not CSS syntax
+// or target existence. Identical repeated targets are accepted; different targets
+// for one event conflict. Use a new [Trigger] with the same name to replace the
+// whole event, including its previous target.
 func TriggerTarget(selector string) TriggerOpt {
 	return TriggerOpt{func(d *triggerDraft) error {
 		if selector == "" {
@@ -84,17 +102,33 @@ func TriggerTarget(selector string) TriggerOpt {
 	}}
 }
 
-// Trigger fires a named event when the response is handled, before navigation/swap.
+// Trigger fires a named event when the response is handled, before navigation
+// or swapping. Names must match [A-Za-z_][A-Za-z0-9_.:-]*; hasOwnProperty is
+// rejected because it breaks the pinned client's dispatcher. This is a supported
+// subset of DOM event names. An empty name is a no-op only without effective
+// payload or target options.
+//
+// Repeating a name within the same phase replaces its complete payload and target,
+// including replacement with a plain event. Names in other phases are independent.
+// A phase that has used JSON retains that encoding when an event becomes plain.
+// Mixed targeted and ordinary events are supported; the encoder places ordinary
+// events first to avoid target leakage in htmx 2.0.10. This is not an event
+// sequencing API. See [Detail] and [TriggerTarget] for payload and routing rules.
 func Trigger(name string, opts ...TriggerOpt) ResponseOpt {
 	return triggerOption(phaseImmediate, name, opts)
 }
 
-// TriggerAfterSwap fires after swapping, when the client's response handling swaps.
+// TriggerAfterSwap fires after swapping, when the client's response handling
+// processes a swap. It cannot accompany navigation options. [SwapNone] can still
+// do OOB work and reach this phase. Name, payload and replacement rules are the
+// same as [Trigger], independently of the other phases.
 func TriggerAfterSwap(name string, opts ...TriggerOpt) ResponseOpt {
 	return triggerOption(phaseAfterSwap, name, opts)
 }
 
-// TriggerAfterSettle fires after settling. It cannot accompany navigation options.
+// TriggerAfterSettle fires after settling, when the client processes a swap.
+// It cannot accompany navigation options. Name, payload and replacement rules
+// are the same as [Trigger], independently of the other phases.
 func TriggerAfterSettle(name string, opts ...TriggerOpt) ResponseOpt {
 	return triggerOption(phaseAfterSettle, name, opts)
 }

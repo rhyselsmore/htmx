@@ -64,7 +64,7 @@ jobs:
           cache: false
       - name: Fuzz Each Target for 30 Seconds
         run: |
-          for target in FuzzTriggerRoundTrip FuzzTriggerAccumulation FuzzLocationRoundTrip FuzzApplyAtomicity; do
+          for target in FuzzTriggerRoundTrip FuzzTriggerAccumulation FuzzLocationRoundTrip FuzzApplyAtomicity FuzzResponseWith; do
             go test . -run='^$' -fuzz="^${target}$" -fuzztime=30s -parallel=2
           done
 

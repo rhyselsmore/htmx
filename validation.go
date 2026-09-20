@@ -21,8 +21,14 @@ var (
 	ErrEncode = errors.New("htmx: encoding failed")
 )
 
-// Error identifies a failed operation without including header values or payloads.
-// Cause is available through errors.Is/As; logging it may expose application data.
+// Error identifies a failed operation through Op, Header, Event and Field.
+// Use errors.Is with [ErrInvalidConfig], [ErrConflict], [ErrInvalidHeader], or
+// [ErrEncode], and errors.As for this metadata. Messages do not include payloads,
+// raw header values, or arbitrary marshaler error text. Cause remains available
+// through unwrapping; logging it may expose application data.
+//
+// A validation failure is not automatically an HTTP client error. The application
+// chooses recovery and status based on where the input and instructions came from.
 type Error struct {
 	Op, Header, Event, Field string
 	Kind, Cause              error

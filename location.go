@@ -24,8 +24,17 @@ type locationData struct {
 	oob                        []OOBSelection
 }
 
-// Location requests an AJAX navigation. Empty path is a no-op only when all
-// nested options are empty. The destination endpoint supplies the HTML.
+// Location requests an AJAX navigation; the destination endpoint supplies HTML.
+// The path follows the package URL rules. Empty path is a no-op only when all
+// nested options are empty. Send on a non-3xx response; follow-up HTTP redirects
+// are allowed but their intermediate headers are not processed.
+//
+// Configure the follow-up with LocationSource, LocationTarget, LocationSelect,
+// LocationSwap, LocationSelectOOB, LocationValues, LocationHeaders, and the
+// Location history helpers. These do not describe the current response's swap.
+// Repeating Location must agree on the complete value; a later Location does not
+// patch nested fields. Destination history headers and client hooks can override
+// location history choices.
 func Location(path string, opts ...LocationOpt) ResponseOpt {
 	opts = append([]LocationOpt(nil), opts...)
 	return ResponseOpt{func(s *responseState) error {
@@ -98,7 +107,9 @@ func locationSelector(field, selector string) LocationOpt {
 	}}
 }
 
-// LocationSwap configures the follow-up's main swap.
+// LocationSwap configures the follow-up's main swap using the same strategies
+// and modifiers as [Reswap]. [SwapTextContent] cannot accompany [LocationSelect]
+// or [LocationSelectOOB], because it bypasses selection and OOB processing.
 func LocationSwap(strategy SwapStrategy, opts ...SwapOpt) LocationOpt {
 	opts = append([]SwapOpt(nil), opts...)
 	return LocationOpt{func(d *locationData) error {
@@ -119,8 +130,11 @@ func LocationPushURL(url string) LocationOpt { return locationHistory("push", ur
 // LocationReplaceURL asks the follow-up request to replace history with a fixed URL.
 func LocationReplaceURL(url string) LocationOpt { return locationHistory("replace", url) }
 
-// LocationReplaceDestination replaces history with the eventual destination path
-// and query, after redirects. Follow-up response headers can override this choice.
+// LocationReplaceDestination replaces history with the eventual destination
+// path and query, including redirects. If no response URL is available, the
+// client falls back to its request path and may retain the original anchor.
+// It does not simply copy the path passed to [Location]. Follow-up response
+// history headers and client hooks can override this choice.
 func LocationReplaceDestination() LocationOpt { return locationHistory("destination", "") }
 
 // LocationSuppressHistory disables the location request's explicit push/replace.
@@ -144,8 +158,11 @@ func locationHistory(kind, path string) LocationOpt {
 	}}
 }
 
-// LocationValues snapshots form/query parameters. Empty slices contribute no values.
-// Repeated values are submitted as repeated parameters, in slice order.
+// LocationValues snapshots string form/query parameters at option creation.
+// Repeated strings become repeated parameters in slice order; empty slices
+// contribute nothing. Nested JSON values are not accepted. The key hasOwnProperty
+// is rejected because of the pinned client's form conversion. Strings must be
+// valid UTF-8. Equal repeated settings agree; different settings conflict.
 func LocationValues(values url.Values) LocationOpt {
 	copyValues := make(url.Values, len(values))
 	for k, v := range values {
@@ -175,8 +192,11 @@ func LocationValues(values url.Values) LocationOpt {
 	}}
 }
 
-// LocationHeaders snapshots request headers for the follow-up. The browser still
-// decides which request headers it permits; this does not override client hooks.
+// LocationHeaders snapshots request headers for the follow-up at option creation.
+// Names are validated and canonicalized; case-insensitive duplicates and __proto__
+// are rejected. Values must be ASCII without controls or surrounding whitespace.
+// The browser still decides which headers it permits, and client hooks still
+// apply. Equal repeated settings agree; different settings conflict.
 func LocationHeaders(headers map[string]string) LocationOpt {
 	headers = maps.Clone(headers)
 	return LocationOpt{func(d *locationData) error {
@@ -241,8 +261,12 @@ type OOBSelection struct {
 	err      error
 }
 
-// OOB selects a bare element ID (without #). The strategy must be one of the
-// eight HTML swap strategies; textContent and modifiers are not supported.
+// OOB selects a bare element ID matching [A-Za-z_][A-Za-z0-9_-]*, without #.
+// This is the package's supported ID subset. The strategy must be one of the eight
+// HTML swap strategies; [SwapTextContent] and modifiers are not supported.
+// outerHTML uses the wrapper; inner and insertion strategies use its contents.
+// Empty ID and strategy together are a no-op. See [LocationSelectOOB] for fragment
+// selection, target requirements, and ordinary OOB markup.
 func OOB(id string, strategy SwapStrategy) OOBSelection {
 	o := OOBSelection{id: id, strategy: strategy}
 	if id == "" && strategy == "" {
@@ -272,8 +296,34 @@ func validOOBID(id string) bool {
 	return true
 }
 
-// LocationSelectOOB selects ordered additional fragments from the follow-up HTML.
+// LocationSelectOOB selects ordered additional fragments from follow-up HTML.
 // Equal ID/strategy pairs collapse; the same ID with different strategies conflicts.
+// Empty selections do not disable inherited hx-select-oob or OOB markup. There is
+// no HX-Select-OOB response header.
+//
+// OOB fragments are consumed before the main selection. Keep selected fragments
+// separate: the server cannot check overlap or target existence. A missing source
+// fragment is skipped; a source without a page target causes an htmx OOB error.
+// For OOB listeners, event.detail.target identifies the destination; event.target
+// can be another element in the client's settle list.
+//
+// For LocationTarget("#items"), LocationSelect("#items"),
+// LocationSwap(SwapOuterHTML), and OOB("alerts", SwapOuterHTML), return siblings:
+//
+//	<section id="items"><p>Updated items</p></section>
+//	<div id="alerts">Saved!</div>
+//
+// Both targets must already exist on the page. The executable example also
+// updates a count using innerHTML.
+//
+// Ordinary responses can carry OOB markup without a location option. Templates
+// produce the HTML, for example:
+//
+//	<p>Primary response content</p>
+//	<div id="alerts" hx-swap-oob="true">Saved!</div>
+//	<div hx-swap-oob="beforeend:#messages"><p>Another message</p></div>
+//
+// The last wrapper supplies content to insert inside the existing messages element.
 func LocationSelectOOB(selections ...OOBSelection) LocationOpt {
 	selections = slices.Clone(selections)
 	return LocationOpt{func(d *locationData) error {

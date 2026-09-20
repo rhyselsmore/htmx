@@ -53,6 +53,14 @@ func buildSwap(strategy SwapStrategy, opts []SwapOpt) (swapSpec, error) {
 }
 
 // Reswap overrides the current response's swap strategy and modifiers.
+// Use [SwapInnerHTML], [SwapOuterHTML], [SwapTextContent], [SwapBeforeBegin],
+// [SwapAfterBegin], [SwapBeforeEnd], [SwapAfterEnd], [SwapDelete], or [SwapNone].
+// Use typed modifiers instead of embedding tokens in the strategy string.
+// An empty strategy is a no-op only without effective modifiers.
+//
+// [SwapTextContent] bypasses HTML selection and OOB processing; combining it with
+// [Reselect] conflicts. Modifier zero and false values are explicit settings,
+// distinct from omission. This package supports core swaps, not extension swaps.
 func Reswap(strategy SwapStrategy, opts ...SwapOpt) ResponseOpt {
 	opts = append([]SwapOpt(nil), opts...)
 	return ResponseOpt{func(s *responseState) error {
@@ -70,10 +78,13 @@ func Reswap(strategy SwapStrategy, opts ...SwapOpt) ResponseOpt {
 	}}
 }
 
-// SwapDelay sets the delay before swapping, in exact milliseconds, up to 2147483647ms.
+// SwapDelay sets the delay before swapping. The supported range is exact whole
+// milliseconds from 0 to 2147483647ms. Fractional milliseconds are rejected rather
+// than rounded. Zero is explicit, distinct from omitting the option.
 func SwapDelay(d time.Duration) SwapOpt { return durationOption(d, false) }
 
-// SettleDelay sets the delay before settling, including an explicit zero.
+// SettleDelay sets the delay before settling with the same whole-millisecond
+// range as [SwapDelay]. Zero is explicit, distinct from omitting the option.
 func SettleDelay(d time.Duration) SwapOpt { return durationOption(d, true) }
 
 func durationOption(d time.Duration, settle bool) SwapOpt {
@@ -113,12 +124,19 @@ func boolSwap(value bool, field string) SwapOpt {
 	}}
 }
 
-// Scroll scrolls an element's contents. Empty selector means the swap target.
+// Scroll scrolls an element's contents to [ScrollTop] or [ScrollBottom].
+// Empty selector means the swap target; window is supported. Selectors cannot
+// contain whitespace because the client tokenizes modifiers on whitespace.
+// The package checks transport, not CSS validity. [ScrollNone] is not supported
+// here; it belongs to [Show].
 func Scroll(position ScrollPosition, selector string) SwapOpt {
 	return scrollOption(position, selector, false)
 }
 
-// Show scrolls an element into view. Show(ScrollNone, "") disables automatic showing.
+// Show scrolls an element into view at [ScrollTop] or [ScrollBottom].
+// Empty selector means the swap target; window is supported. Show(ScrollNone, "")
+// disables showing. ScrollNone with a selector is invalid. Selector constraints
+// are the same as [Scroll].
 func Show(position ScrollPosition, selector string) SwapOpt {
 	return scrollOption(position, selector, true)
 }

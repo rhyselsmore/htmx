@@ -367,3 +367,43 @@ test('scroll selector colons and Show position resolve in the browser', async ({
     )
     .toBeLessThan(3);
 });
+
+// Reuse one server-side base across XHRs. Assertions cover routing and rendered
+// content, so a correctly formatted header with leaked state still fails.
+test('derived responses keep per-request details and targets out of their shared base', async ({
+  page,
+}) => {
+  await open(page, { case: 'derived' });
+  const cases = [
+    { value: 'first café 😀', target: '#alerts', eventTarget: 'alerts' },
+    { value: 'second', target: '#count', eventTarget: 'count' },
+    { value: 'plain', mode: 'plain', eventTarget: 'request', eventValue: null },
+    { value: 'base', mode: 'base', eventTarget: 'alerts' },
+  ];
+  for (const entry of cases) {
+    const query = new URLSearchParams({ case: 'derived', value: entry.value });
+    if (entry.target) query.set('target', entry.target);
+    if (entry.mode) query.set('mode', entry.mode);
+    await page.evaluate(async (query) => {
+      window.events = [];
+      await htmx.ajax('GET', '/response?' + query, { source: '#request', target: '#main' });
+    }, query.toString());
+    await expect(page.locator('#changed')).toHaveText(entry.value);
+    await expect.poll(() => eventNames(page)).toContain('after-swap');
+    const events = await page.evaluate(() => window.events);
+    expect(events).toHaveLength(3);
+    expect(events.find((event) => event.name === 'a-target')).toMatchObject({
+      target: entry.eventTarget,
+      value: entry.eventValue === null ? null : entry.value,
+    });
+    expect(events.find((event) => event.name === 'z-plain')).toMatchObject({
+      target: 'request',
+      value: 'ordinary',
+    });
+    expect(events.find((event) => event.name === 'after-swap')).toMatchObject({
+      target: 'request',
+      value: entry.value,
+      main: entry.value,
+    });
+  }
+});

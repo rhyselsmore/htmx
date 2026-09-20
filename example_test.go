@@ -15,9 +15,7 @@ import (
 
 func ExampleRespond() {
 	w := httptest.NewRecorder()
-	err := htmx.Respond(w, htmx.Retarget("#items"), htmx.Reswap(htmx.SwapOuterHTML), htmx.Trigger("saved", htmx.Detail(struct {
-		ID string `json:"id"`
-	}{ID: "42"})))
+	err := htmx.Respond(w, htmx.Retarget("#items"), htmx.Reswap(htmx.SwapOuterHTML), htmx.Trigger("itemSaved", htmx.Detail(ItemSaved{ID: "42"})))
 	if err != nil {
 		http.Error(w, "Could not prepare response", http.StatusInternalServerError)
 		return
@@ -27,7 +25,7 @@ func ExampleRespond() {
 		return
 	}
 	fmt.Println(w.Code, w.Header().Get(htmx.HeaderRetarget), w.Header().Get(htmx.HeaderTrigger))
-	// Output: 200 #items {"saved":{"id":"42"}}
+	// Output: 200 #items {"itemSaved":{"id":"42"}}
 }
 
 func ExampleNewResponse() {
@@ -105,7 +103,7 @@ func ExampleStopPolling() {
 func ExampleRespond_conflict() {
 	w := httptest.NewRecorder()
 	w.Header().Set("X-App", "keep")
-	err := htmx.Respond(w, htmx.Redirect("/next"), htmx.PushURL("/next"))
+	err := htmx.Respond(w, htmx.Redirect("/sign-in"), htmx.Reswap(htmx.SwapOuterHTML))
 	fmt.Println(errors.Is(err, htmx.ErrConflict), w.Header().Get("X-App"), len(w.Header()))
 	// Output: true keep 1
 }
@@ -163,4 +161,81 @@ func ExampleWantsFragment() {
 	// true
 	// false
 	// [Accept-Encoding HX-Request HX-Boosted HX-History-Restore-Request]
+}
+
+// ItemSaved is application data, not a package-owned payload type.
+type ItemSaved struct {
+	ID string `json:"id"`
+}
+
+var itemBase = htmx.MustResponse(
+	htmx.Retarget("#items"),
+	htmx.Reswap(htmx.SwapOuterHTML),
+)
+
+func prepareSaved(w http.ResponseWriter, id string) error {
+	response, err := itemBase.With(
+		htmx.Trigger("itemSaved", htmx.Detail(ItemSaved{ID: id})),
+	)
+	if err != nil {
+		return err
+	}
+	return response.Apply(w)
+}
+
+func ExampleResponse_With() {
+	w := httptest.NewRecorder()
+	if err := prepareSaved(w, "42"); err != nil {
+		http.Error(w, "Could not prepare response", http.StatusInternalServerError)
+		return
+	}
+	if _, err := fmt.Fprint(w, `<section id="items">Saved</section>`); err != nil {
+		log.Printf("write response: %v", err)
+		return
+	}
+	fmt.Println(w.Header().Get(htmx.HeaderRetarget))
+	fmt.Println(w.Header().Get(htmx.HeaderTrigger))
+	// Output:
+	// #items
+	// {"itemSaved":{"id":"42"}}
+}
+
+func prepareItem(w http.ResponseWriter, id string, created bool) error {
+	opts := []htmx.ResponseOpt{
+		htmx.Retarget("#items"),
+		htmx.Reswap(htmx.SwapOuterHTML),
+	}
+	if created {
+		opts = append(opts, htmx.Trigger("itemCreated", htmx.Detail(ItemSaved{ID: id})))
+	}
+	return htmx.Respond(w, opts...)
+}
+
+func ExampleRespond_conditional() {
+	for _, created := range []bool{false, true} {
+		w := httptest.NewRecorder()
+		if err := prepareItem(w, "42", created); err != nil {
+			http.Error(w, "Could not prepare response", http.StatusInternalServerError)
+			return
+		}
+		fmt.Println(created, w.Header().Get(htmx.HeaderTrigger) != "")
+	}
+	// Output:
+	// false false
+	// true true
+}
+
+func ExampleResponse_With_conflict() {
+	base := htmx.MustResponse(htmx.Retarget("#items"))
+	response, err := base.With(htmx.Retarget("#other"))
+	fmt.Println(response == nil, errors.Is(err, htmx.ErrConflict))
+	w := httptest.NewRecorder()
+	if err := base.Apply(w); err != nil {
+		http.Error(w, "Could not prepare response", http.StatusInternalServerError)
+		return
+	}
+	fmt.Println(w.Header().Get(htmx.HeaderRetarget))
+	// Output:
+	// true true
+	// #items
 }

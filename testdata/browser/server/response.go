@@ -1,6 +1,7 @@
 package main
 
 import (
+	"html"
 	"net/http"
 	"strconv"
 	"time"
@@ -14,6 +15,9 @@ func response(w http.ResponseWriter, r *http.Request) {
 	kind := q.Get("case")
 	var opts []htmx.ResponseOpt
 	switch kind {
+	case "derived":
+		derivedResponse(w, r)
+		return
 	case "location":
 		locationResponse(w, q)
 		return
@@ -100,4 +104,40 @@ func response(w http.ResponseWriter, r *http.Request) {
 		body = `<title>new title</title>` + body
 	}
 	writeFixture(w, body)
+}
+
+// Every request derives from the same base. Browser checks use different data
+// and targets, then apply the base itself to detect leaked request state.
+var derivedBase = htmx.MustResponse(
+	htmx.Retarget("#main"),
+	htmx.Reswap(htmx.SwapInnerHTML),
+	htmx.Trigger("a-target", htmx.Detail("base"), htmx.TriggerTarget("#alerts")),
+	htmx.Trigger("z-plain", htmx.Detail("ordinary")),
+	htmx.TriggerAfterSwap("after-swap", htmx.Detail("base")),
+)
+
+func derivedResponse(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	value := q.Get("value")
+	response := derivedBase
+	if q.Get("mode") == "base" {
+		value = "base"
+	} else {
+		event := htmx.Trigger("a-target", htmx.Detail(value), htmx.TriggerTarget(q.Get("target")))
+		if q.Get("mode") == "plain" {
+			// Plain replacement must remove both the base's payload and its target.
+			event = htmx.Trigger("a-target")
+		}
+		var err error
+		response, err = derivedBase.With(event, htmx.TriggerAfterSwap("after-swap", htmx.Detail(value)))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+	}
+	if err := response.Apply(w); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeFixture(w, `<p id="changed">`+html.EscapeString(value)+`</p>`)
 }
